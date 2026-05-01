@@ -5,16 +5,13 @@ MCU Admin Bot
 • Replies with file_name + file_id
 • Saves to Firestore (primary + backup)
 • Broadcasts text or photo+caption to main bot users
-• FastAPI /health endpoint to keep Render alive via UptimeRobot
 """
 
 import asyncio
 import logging
 import os
-import threading
 from datetime import datetime, timezone
 
-import uvicorn
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError, TelegramNotFound, TelegramRetryAfter
@@ -24,7 +21,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from dotenv import load_dotenv
-from fastapi import FastAPI
 from google.cloud import firestore
 
 load_dotenv()
@@ -35,9 +31,8 @@ MAIN_BOT_TOKEN  = os.environ["MAIN_BOT_TOKEN"]
 ADMIN_ID        = int(os.environ["ADMIN_ID"])
 CHANNEL_ID      = int(os.environ["CHANNEL_ID"])
 FIRESTORE_PROJ  = os.environ["FIRESTORE_PROJECT"]
-PORT            = int(os.environ.get("PORT", 8000))
 
-RATE_LIMIT_SEC  = 1 / 30
+RATE_LIMIT_SEC  = 1 / 30   # 30 messages/sec
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -53,17 +48,7 @@ db = firestore.Client(project=FIRESTORE_PROJ)
 admin_bot = Bot(token=ADMIN_BOT_TOKEN, parse_mode=ParseMode.MARKDOWN_V2)
 main_bot  = Bot(token=MAIN_BOT_TOKEN)
 
-dp  = Dispatcher(storage=MemoryStorage())
-web = FastAPI()
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# KEEPALIVE  — UptimeRobot pings this every 10 min
-# ══════════════════════════════════════════════════════════════════════════
-
-@web.get("/health")
-async def health():
-    return {"status": "alive", "bot": "MCU Admin Bot"}
+dp = Dispatcher(storage=MemoryStorage())
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -98,27 +83,50 @@ def save_file_to_firestore(file_id: str, file_name: str, file_type: str):
 # ══════════════════════════════════════════════════════════════════════════
 
 def extract_file_info(message: Message):
+    """
+    Pull (file_id, file_name, file_type) from any message type.
+    Returns None if no supported file found.
+    """
     if message.video:
-        return (message.video.file_id, message.video.file_name or "unknown_video", "video")
+        return (
+            message.video.file_id,
+            message.video.file_name or "unknown_video",
+            "video",
+        )
     if message.document:
-        return (message.document.file_id, message.document.file_name or "unknown_document", "document")
+        return (
+            message.document.file_id,
+            message.document.file_name or "unknown_document",
+            "document",
+        )
     if message.photo:
         photo = message.photo[-1]
-        return (photo.file_id, f"photo_{photo.file_unique_id}.jpg", "photo")
+        return (
+            photo.file_id,
+            f"photo_{photo.file_unique_id}.jpg",
+            "photo",
+        )
     if message.audio:
-        return (message.audio.file_id, message.audio.file_name or "unknown_audio", "audio")
+        return (
+            message.audio.file_id,
+            message.audio.file_name or "unknown_audio",
+            "audio",
+        )
     return None
 
 
 @dp.channel_post(F.chat.id == CHANNEL_ID)
 async def on_channel_file(message: Message):
+    """Fires when anything is posted in the private channel."""
     info = extract_file_info(message)
     if not info:
         return
 
     file_id, file_name, file_type = info
+
     save_file_to_firestore(file_id, file_name, file_type)
 
+    # Reply in channel
     reply_text = (
         "📁 *File Captured\\!*\n\n"
         f"*Name:* `{escape_md(file_name)}`\n"
@@ -128,6 +136,7 @@ async def on_channel_file(message: Message):
     )
     await message.reply(reply_text)
 
+    # Notify admin privately
     await admin_bot.send_message(
         ADMIN_ID,
         "📥 *New file in channel\\!*\n\n"
@@ -151,7 +160,7 @@ async def cmd_broadcast(message: Message, state: FSMContext):
     await state.set_state(BroadcastStates.waiting_for_text)
     await message.answer(
         "📝 *Send me the broadcast message\\.*\n\n"
-        "Formatting supported:\n"
+        "Telegram formatting supported:\n"
         "`*bold*` → *bold*\n"
         "`_italic_` → _italic_\n\n"
         "Send /cancel to abort\\."
@@ -165,6 +174,7 @@ async def receive_broadcast_text(message: Message, state: FSMContext):
     if not text:
         await message.answer("❌ No text found\\. Cancelled\\.")
         return
+
     await message.answer("🚀 Starting broadcast\\.\\.\\.")
     sent, failed = await do_broadcast_text(text)
     await message.answer(
@@ -190,7 +200,7 @@ async def receive_broadcast_photo(message: Message, state: FSMContext):
     await state.set_state(BroadcastStates.waiting_for_photo_caption)
     await message.answer(
         "✏️ *Now send the caption for this photo\\.*\n"
-        "Bold and italic supported\\.\n"
+        "Bold and italic formatting supported\\.\n"
         "Send /cancel to abort\\."
     )
 
@@ -201,9 +211,11 @@ async def receive_broadcast_caption(message: Message, state: FSMContext):
     photo_id = data.get("photo_id")
     caption  = message.text or message.caption
     await state.clear()
+
     if not caption:
         await message.answer("❌ No caption found\\. Cancelled\\.")
         return
+
     await message.answer("🚀 Starting photo broadcast\\.\\.\\.")
     sent, failed = await do_broadcast_photo(photo_id, caption)
     await message.answer(
@@ -264,11 +276,16 @@ async def mark_inactive(user_id: int):
 async def do_broadcast_text(text: str) -> tuple[int, int]:
     user_ids = await get_all_active_user_ids()
     sent = failed = 0
+
     for uid in user_ids:
         retries = 0
         while retries < 3:
             try:
-                await main_bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.MARKDOWN_V2)
+                await main_bot.send_message(
+                    chat_id=uid,
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
                 sent += 1
                 break
             except TelegramRetryAfter as e:
@@ -283,17 +300,24 @@ async def do_broadcast_text(text: str) -> tuple[int, int]:
                 failed += 1
                 break
         await asyncio.sleep(RATE_LIMIT_SEC)
+
     return sent, failed
 
 
 async def do_broadcast_photo(photo_id: str, caption: str) -> tuple[int, int]:
     user_ids = await get_all_active_user_ids()
     sent = failed = 0
+
     for uid in user_ids:
         retries = 0
         while retries < 3:
             try:
-                await main_bot.send_photo(chat_id=uid, photo=photo_id, caption=caption, parse_mode=ParseMode.MARKDOWN_V2)
+                await main_bot.send_photo(
+                    chat_id=uid,
+                    photo=photo_id,
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
                 sent += 1
                 break
             except TelegramRetryAfter as e:
@@ -308,27 +332,17 @@ async def do_broadcast_photo(photo_id: str, caption: str) -> tuple[int, int]:
                 failed += 1
                 break
         await asyncio.sleep(RATE_LIMIT_SEC)
+
     return sent, failed
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ENTRY POINT — runs bot + web server together
+# ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════
-
-def run_web():
-    """Run FastAPI in a separate thread so bot polling isn't blocked."""
-    uvicorn.run(web, host="0.0.0.0", port=PORT)
-
 
 async def main():
     log.info("Admin bot starting...")
-    # Start web server in background thread
-    thread = threading.Thread(target=run_web, daemon=True)
-    thread.start()
-    log.info(f"Health endpoint live on port {PORT}")
-    # Start bot polling
     await dp.start_polling(admin_bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
