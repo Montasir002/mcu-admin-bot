@@ -31,6 +31,7 @@ MAIN_BOT_TOKEN  = os.environ["MAIN_BOT_TOKEN"]
 ADMIN_ID        = int(os.environ["ADMIN_ID"])
 CHANNEL_ID      = int(os.environ["CHANNEL_ID"])
 FIRESTORE_PROJ  = os.environ["FIRESTORE_PROJECT"]
+PORT            = int(os.environ.get("PORT", 10000))
 
 RATE_LIMIT_SEC  = 1 / 30   # 30 messages/sec
 
