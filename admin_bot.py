@@ -345,4 +345,6 @@ async def main():
     await dp.start_polling(admin_bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    thread = threading.Thread(target=run_web, daemon=True)
+    thread.start()
+    asyncio.run(start_bot())
