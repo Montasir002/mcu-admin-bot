@@ -1,6 +1,6 @@
 /*CMD
   command: /reply
-  help: 
+  help: Send a message to a user (admin only)
   need_reply: false
   auto_retry_time: 
   folder: 
@@ -14,11 +14,6 @@
   KEYBOARD
   aliases: 
   group: 
-CMD*/
-
-/*CMD
-  command: /reply
-  need_reply: false
 CMD*/
 
 // FEATURE #3: Admin direct reply command
@@ -59,7 +54,7 @@ if (!targetId || !replyText) {
 
 // Send reply to user
 var result = Api.sendMessage({
-  chat_id:    targetId,
+  chat_id:    parseInt(targetId),
   parse_mode: "HTML",
   text:
     "📩 <b>Message from Admin:</b>\n\n" +
@@ -74,7 +69,7 @@ var result = Api.sendMessage({
 });
 
 // Confirm to admin
-if (result && result.ok) {
+if (result && (result.ok === true || result.message_id)) {
   Bot.sendMessage("✅ Reply sent to user ID: " + targetId);
 } else {
   Bot.sendMessage(
