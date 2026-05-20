@@ -1,12 +1,12 @@
 /*CMD
   command: /contact
-  help: 
-  need_reply: false
+  help: Send a message to admin for support
+  need_reply: true
   auto_retry_time: 
   folder: 
 
   <<ANSWER
-
+Send your message and we'll get back to you soon!
   ANSWER
 
   <<KEYBOARD
@@ -14,11 +14,6 @@
   KEYBOARD
   aliases: 
   group: 
-CMD*/
-
-/*CMD
-  command: /contact
-  need_reply: true
 CMD*/
 
 // FEATURE #3: Rate-limited ticketing pipeline
